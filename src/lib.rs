@@ -7,21 +7,22 @@ use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use binary_search_tree::BinarySearchTree;
 
-pub struct GenericBuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, T, M, A>
+pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O, T, M, A>
     where
         M: memory_addresses::MemoryAddress<RAW=T> + 'static,
-        A: core::alloc::Allocator + Clone + 'static,
+        A: Allocator + Clone + 'static,
         T: From<u8> + Copy
 
 
 {
     orders: [Order<T,M,A>; ORDERS],
+    _p: core::marker::PhantomData<O>
 }
 
-impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> GenericBuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, T, M, A>
+impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, O, T, M, A>
     where
         M: memory_addresses::MemoryAddress<RAW=T> + 'static,
-        A: core::alloc::Allocator + Clone + Copy + 'static,
+        A: Allocator + Clone + Copy + 'static,
         T: From<u8> + Copy
 {
     const fn new(alloc: A) -> Self {
@@ -35,6 +36,7 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> GenericBuddyAl
 
         Self {
             orders: unsafe { core::mem::transmute_copy(&orders) },
+            _p: core::marker::PhantomData
         }
     }
 
@@ -72,7 +74,14 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> GenericBuddyAl
             }
         }
     }
+}
 
+impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, Overflow, T, M, A>
+where
+    M: memory_addresses::MemoryAddress<RAW=T> + 'static,
+    A: Allocator + Clone + Copy + 'static,
+    T: From<u8> + Copy
+{
     pub fn deallocate(&mut self, size: usize, addr: M) -> Result<(),M> {
         self.deallocate_inner((size >> PAGE_SIZE_OFFSET-1).next_power_of_two(), addr)
     }
@@ -81,7 +90,32 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> GenericBuddyAl
         match self.orders[order].insert(Self::encode_addr(address, order)) {
             OperationResult::Success => {Ok(())}
             OperationResult::Merged(m) if order == self.orders.len()-1 => {
-                todo!() // There should be a compile time option to either forcibly store this or return an error.
+                Err(Self::decode_addr(m, order))
+            }
+            OperationResult::Merged(m) => {
+                self.deallocate_inner(order + 1, Self::decode_addr(m,order))?;
+                Ok(())
+            }
+        }
+    }
+}
+
+impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, NoOverflow, T, M, A>
+where
+    M: memory_addresses::MemoryAddress<RAW=T> + 'static,
+    A: Allocator + Clone + Copy + 'static,
+    T: From<u8> + Copy
+{
+    pub fn deallocate(&mut self, size: usize, addr: M) -> Result<(),M> {
+        self.deallocate_inner((size >> PAGE_SIZE_OFFSET-1).next_power_of_two(), addr)
+    }
+
+    fn deallocate_inner(&mut self, order: usize, address: M) -> Result<(),M> {
+        match self.orders[order].insert(Self::encode_addr(address, order)) {
+            OperationResult::Success => {Ok(())}
+            OperationResult::Merged(m) if order == self.orders.len()-1 => {
+                self.orders[order].insert_without_buddy_check(m);
+                Ok(())
             }
             OperationResult::Merged(m) => {
                 self.deallocate_inner(order + 1, Self::decode_addr(m,order))?;
@@ -164,6 +198,9 @@ enum OperationResult<M: memory_addresses::MemoryAddress> {
     Merged(Encoded<M>),
 }
 
+enum Overflow {}
+enum NoOverflow {}
+
 #[cfg(test)]
 mod tests {
     use alloc::alloc::Global;
@@ -171,18 +208,38 @@ mod tests {
     extern crate std;
     extern crate alloc;
 
-    type TestBAlloc = GenericBuddyAllocator::<22,12,u64,memory_addresses::arch::x86_64::VirtAddr,Global>;
+    type TestBAlloc<const ORDERS: usize, O> = BuddyAllocator::<ORDERS,12, O,u64,memory_addresses::arch::x86_64::VirtAddr,Global>;
 
 
-    struct ImplAlloc {
-        inner: std::sync::Mutex<TestBAlloc>
+    struct ImplAlloc<const ORDERS: usize, O> {
+        inner: std::sync::Mutex<TestBAlloc<ORDERS,O>>
     }
 
     /// # Safety
     ///
     /// Note that all allocations and frees are unsound, because this does not manage system memory.
     /// Allocated addresses returned by `allocate` must not be dereferenced.
-    unsafe impl Allocator for ImplAlloc {
+    unsafe impl<const ORDERS: usize> Allocator for ImplAlloc<ORDERS,Overflow> {
+        fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
+            let mut l = self.inner.lock().unwrap();
+            let size = layout.size().min(layout.align());
+            l.allocate(size).map(|r| {
+                let ptr = r.as_mut_ptr();
+                let Some(v) = NonNull::new(unsafe { core::slice::from_raw_parts_mut(ptr, size.next_power_of_two()) }) else {
+                    panic!()
+                };
+                v
+            })
+        }
+
+        unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+            let mut l = self.inner.lock().unwrap();
+            let size = layout.size().min(layout.align());
+            l.deallocate(size, memory_addresses::arch::x86_64::VirtAddr::from_ptr(ptr.as_ptr())).expect("Exceeded single block size");
+        }
+    }
+
+    unsafe impl<const ORDERS: usize> Allocator for ImplAlloc<ORDERS,NoOverflow> {
         fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
             let mut l = self.inner.lock().unwrap();
             let size = layout.size().min(layout.align());
@@ -205,7 +262,7 @@ mod tests {
     #[test]
     fn buddy_calc() {
         let base = memory_addresses::arch::x86_64::VirtAddr::new(0);
-        let encoded = TestBAlloc::encode_addr(base,0);
+        let encoded = TestBAlloc::<12,Overflow>::encode_addr(base,0);
         assert_eq!(encoded.0, base);
         let buddy = buddy_of(encoded);
         assert_eq!(buddy_of(buddy), encoded);
@@ -213,7 +270,18 @@ mod tests {
 
     #[test]
     fn bootstrap() {
-        let alloc = ImplAlloc {
+        let alloc: ImplAlloc<11, NoOverflow> = ImplAlloc {
+            inner: std::sync::Mutex::new(TestBAlloc::new(Global))
+        };
+        for n in (0..0x1000_0000usize).step_by(0x1000).skip(1) {
+            unsafe { alloc.deallocate( NonNull::new(n as *mut u8).unwrap(), Layout::from_size_align_unchecked(0x1000, 0x1000)) };
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Exceeded single block size")]
+    fn bootstrap_overflow() {
+        let alloc: ImplAlloc<11, Overflow> = ImplAlloc {
             inner: std::sync::Mutex::new(TestBAlloc::new(Global))
         };
         for n in (0..0x1000_0000usize).step_by(0x1000).skip(1) {
