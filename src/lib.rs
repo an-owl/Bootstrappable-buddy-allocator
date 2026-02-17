@@ -76,54 +76,42 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O, T, M, A> BuddyAlloca
     }
 }
 
-impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, Overflow, T, M, A>
-where
-    M: memory_addresses::MemoryAddress<RAW=T> + 'static,
-    A: Allocator + Clone + Copy + 'static,
-    T: From<u8> + Copy
-{
-    pub fn deallocate(&mut self, size: usize, addr: M) -> Result<(),M> {
-        self.deallocate_inner((size >> PAGE_SIZE_OFFSET-1).next_power_of_two(), addr)
-    }
-
-    fn deallocate_inner(&mut self, order: usize, address: M) -> Result<(),M> {
-        match self.orders[order].insert(Self::encode_addr(address, order)) {
-            OperationResult::Success => {Ok(())}
-            OperationResult::Merged(m) if order == self.orders.len()-1 => {
-                Err(Self::decode_addr(m, order))
+macro_rules! impl_dealloc {
+    ($overflow:ty, $self:ident, $addr:ident, $order:ident, $last_order:expr) => {
+        impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, $overflow, T, M, A>
+        where
+        M: memory_addresses::MemoryAddress<RAW=T> + 'static,
+        A: Allocator + Clone + Copy + 'static,
+        T: From<u8> + Copy
+        {
+            pub fn deallocate(&mut self, size: usize, addr: M) -> Result<(),M> {
+                let offset = (size >> PAGE_SIZE_OFFSET).next_power_of_two();
+                let order = offset.trailing_zeros() as usize;
+                self.deallocate_inner(order, addr)
             }
-            OperationResult::Merged(m) => {
-                self.deallocate_inner(order + 1, Self::decode_addr(m,order))?;
-                Ok(())
+
+            fn deallocate_inner(&mut self, $order: usize, address: M) -> Result<(),M> {
+                let $self = self;
+                match $self.orders[$order].insert(Self::encode_addr(address, $order)) {
+                    OperationResult::Success => {Ok(())}
+                    OperationResult::Merged($addr) if $order == $self.orders.len() => {
+                        $last_order
+                    }
+                    OperationResult::Merged(m) => {
+                        $self.deallocate_inner($order + 1, Self::decode_addr(m,$order))?;
+                        Ok(())
+                    }
+                }
             }
         }
-    }
+    };
 }
 
-impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, NoOverflow, T, M, A>
-where
-    M: memory_addresses::MemoryAddress<RAW=T> + 'static,
-    A: Allocator + Clone + Copy + 'static,
-    T: From<u8> + Copy
-{
-    pub fn deallocate(&mut self, size: usize, addr: M) -> Result<(),M> {
-        self.deallocate_inner((size >> PAGE_SIZE_OFFSET-1).next_power_of_two(), addr)
-    }
-
-    fn deallocate_inner(&mut self, order: usize, address: M) -> Result<(),M> {
-        match self.orders[order].insert(Self::encode_addr(address, order)) {
-            OperationResult::Success => {Ok(())}
-            OperationResult::Merged(m) if order == self.orders.len()-1 => {
-                self.orders[order].insert_without_buddy_check(m);
-                Ok(())
-            }
-            OperationResult::Merged(m) => {
-                self.deallocate_inner(order + 1, Self::decode_addr(m,order))?;
-                Ok(())
-            }
-        }
-    }
-}
+impl_dealloc!(Overflow, _i,m,order, Err(Self::decode_addr(m,order)));
+impl_dealloc!(NoOverflow, this ,m,order, {
+    this.orders[order].insert_without_buddy_check(m);
+    Ok(())
+});
 
 /// Contains the elements of a single order.
 ///
