@@ -200,7 +200,7 @@ mod tests {
 
 
     struct ImplAlloc<const ORDERS: usize, O> {
-        inner: std::sync::Mutex<TestBAlloc<ORDERS,O>>
+        inner: std::cell::RefCell<TestBAlloc<ORDERS,O>>
     }
 
     /// # Safety
@@ -209,7 +209,7 @@ mod tests {
     /// Allocated addresses returned by `allocate` must not be dereferenced.
     unsafe impl<const ORDERS: usize> Allocator for ImplAlloc<ORDERS,Overflow> {
         fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-            let mut l = self.inner.lock().unwrap();
+            let mut l = self.inner.borrow_mut();
             let size = layout.size().min(layout.align());
             l.allocate(size).map(|r| {
                 let ptr = r.as_mut_ptr();
@@ -221,7 +221,7 @@ mod tests {
         }
 
         unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-            let mut l = self.inner.lock().unwrap();
+            let mut l = self.inner.borrow_mut();
             let size = layout.size().min(layout.align());
             l.deallocate(size, memory_addresses::arch::x86_64::VirtAddr::from_ptr(ptr.as_ptr())).expect("Exceeded single block size");
         }
@@ -229,7 +229,7 @@ mod tests {
 
     unsafe impl<const ORDERS: usize> Allocator for ImplAlloc<ORDERS,NoOverflow> {
         fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-            let mut l = self.inner.lock().unwrap();
+            let mut l = self.inner.borrow_mut();
             let size = layout.size().min(layout.align());
             l.allocate(size).map(|r| {
                 let ptr = r.as_mut_ptr();
@@ -241,7 +241,7 @@ mod tests {
         }
 
         unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-            let mut l = self.inner.lock().unwrap();
+            let mut l = self.inner.borrow_mut();
             let size = layout.size().min(layout.align());
             l.deallocate(size, memory_addresses::arch::x86_64::VirtAddr::from_ptr(ptr.as_ptr())).expect("Exceeded single block size");
         }
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn bootstrap() {
         let alloc: ImplAlloc<11, NoOverflow> = ImplAlloc {
-            inner: std::sync::Mutex::new(TestBAlloc::new(Global))
+            inner: std::cell::RefCell::new(TestBAlloc::new(Global))
         };
         for n in (0..0x1000_0000usize).step_by(0x1000).skip(1) {
             unsafe { alloc.deallocate( NonNull::new(n as *mut u8).unwrap(), Layout::from_size_align_unchecked(0x1000, 0x1000)) };
@@ -270,7 +270,7 @@ mod tests {
     #[should_panic(expected = "Exceeded single block size")]
     fn bootstrap_overflow() {
         let alloc: ImplAlloc<11, Overflow> = ImplAlloc {
-            inner: std::sync::Mutex::new(TestBAlloc::new(Global))
+            inner: std::cell::RefCell::new(TestBAlloc::new(Global))
         };
         for n in (0..0x1000_0000usize).step_by(0x1000).skip(1) {
             unsafe { alloc.deallocate( NonNull::new(n as *mut u8).unwrap(), Layout::from_size_align_unchecked(0x1000, 0x1000)) };
