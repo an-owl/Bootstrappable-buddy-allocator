@@ -276,4 +276,73 @@ mod tests {
             unsafe { alloc.deallocate( NonNull::new(n as *mut u8).unwrap(), Layout::from_size_align_unchecked(0x1000, 0x1000)) };
         }
     }
+
+    #[test]
+    fn allocate_simple() {
+        let bs = 0x100_0000usize;
+        let alloc: ImplAlloc<14, Overflow> = ImplAlloc {
+            inner: std::cell::RefCell::new(TestBAlloc::new(Global))
+        };
+        unsafe { alloc.deallocate(NonNull::new(bs as *mut u8).unwrap(), Layout::from_size_align_unchecked(bs, bs)) };
+
+        for _ in 0..0x1000 {
+            alloc.allocate(unsafe { Layout::from_size_align_unchecked(4096, 4096) }).unwrap();
+        }
+    }
+
+    #[test]
+    fn alloc_not_simple() {
+        let bs = 0x100_0000usize;
+        let alloc: ImplAlloc<14, NoOverflow> = ImplAlloc {
+            inner: std::cell::RefCell::new(TestBAlloc::new(Global))
+        };
+        for i in 0..16 {
+            unsafe { alloc.deallocate(NonNull::new((bs*(i+1)) as *mut u8).unwrap(), Layout::from_size_align_unchecked(bs, bs)) };
+        }
+
+        let mut rng = rand::rng();
+        let mut v = Vec::new();
+        for _ in 0..0x8000 {
+            let ptr = alloc.allocate(unsafe { Layout::from_size_align_unchecked(4096, 4096) }).unwrap();
+            std::println!("{:p}", ptr.as_ptr().cast::<u8>());
+            v.push(ptr);
+        }
+
+        if !has_unique_elements(&v) {
+            v.sort();
+            for i in v {
+                //std::println!("{:p}", i.as_ptr().cast::<u8>())
+            }
+            panic!("Contains duplicate elements");
+        }
+
+        for _i in 0..1_0000 {
+
+            v.shuffle(&mut rng);
+            for _ in 0..0x4000 {
+                unsafe { alloc.deallocate(v.pop().unwrap().cast(), Layout::from_size_align_unchecked(4096, 4096)) };
+            }
+
+            for _ in 0..0x4000 {
+                v.push(alloc.allocate(unsafe { Layout::from_size_align_unchecked(4096, 4096) }).unwrap())
+            }
+
+            if !has_unique_elements(&v) {
+                v.sort();
+                for i in v {
+                    std::println!("{:p}", i.as_ptr().cast::<u8>())
+                }
+                panic!("Contains duplicate elements");
+            }
+        }
+    }
+
+    fn has_unique_elements<T>(iter: T) -> bool
+    where
+        T: IntoIterator,
+        T::Item: Eq + std::hash::Hash,
+    {
+        let mut uniq = std::collections::HashSet::new();
+        iter.into_iter().all(move |x| uniq.insert(x))
+    }
 }
