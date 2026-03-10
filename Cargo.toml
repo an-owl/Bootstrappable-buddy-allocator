@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 binary_search_tree = { git = "https://github.com/an-owl/binary_search_tree" }
 memory_addresses = "0.3.0"
+
+[dev-dependencies]
+rand = "0.10.0"

@@ -55,14 +55,16 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O, T, M, A> BuddyAlloca
     }
 
     pub fn allocate(&mut self, size: usize) -> Result<M,AllocError> {
-        self.allocate_inner((size >> PAGE_SIZE_OFFSET-1).next_power_of_two())
+        let offset = (size >> PAGE_SIZE_OFFSET).next_power_of_two();
+        let order = offset.trailing_zeros() as usize;
+        self.allocate_inner(order)
     }
 
     fn allocate_inner(&mut self, order: usize) -> Result<M,AllocError> {
 
         match self.orders[order].pop() {
             Some(addr) => Ok(Self::decode_addr(addr, order)),
-            None if order == self.orders.len()-1 => {return Err(AllocError)},
+            None if order+1 == ORDERS => {return Err(AllocError)},
             None => {
                 let addr = self.allocate_inner(order+1)?;
                 let remain = buddy_of(Self::encode_addr(addr, order));
@@ -94,7 +96,7 @@ macro_rules! impl_dealloc {
                 let $self = self;
                 match $self.orders[$order].insert(Self::encode_addr(address, $order)) {
                     OperationResult::Success => {Ok(())}
-                    OperationResult::Merged($addr) if $order == $self.orders.len() => {
+                    OperationResult::Merged($addr) if $order+1 == ORDERS => {
                         $last_order
                     }
                     OperationResult::Merged(m) => {
@@ -147,7 +149,7 @@ impl<T,M,A> Order<T,M,A>
             self.binary_search_tree.remove(&buddy);
             OperationResult::Merged(buddy.min(address))
         } else {
-            assert!(!self.binary_search_tree.insert_without_dup(buddy), "Duplicate address in order");
+            assert!(!self.binary_search_tree.insert_without_dup(address), "Duplicate address in order");
             OperationResult::Success
         }
     }
@@ -192,6 +194,8 @@ enum NoOverflow {}
 #[cfg(test)]
 mod tests {
     use alloc::alloc::Global;
+    use alloc::vec::Vec;
+    use rand::prelude::SliceRandom;
     use super::*;
     extern crate std;
     extern crate alloc;
@@ -297,23 +301,14 @@ mod tests {
             inner: std::cell::RefCell::new(TestBAlloc::new(Global))
         };
         for i in 0..16 {
-            unsafe { alloc.deallocate(NonNull::new((bs*(i+1)) as *mut u8).unwrap(), Layout::from_size_align_unchecked(bs, bs)) };
+            unsafe { alloc.deallocate(NonNull::new((bs*(i+2)) as *mut u8).unwrap(), Layout::from_size_align_unchecked(bs, bs)) };
         }
 
         let mut rng = rand::rng();
         let mut v = Vec::new();
         for _ in 0..0x8000 {
             let ptr = alloc.allocate(unsafe { Layout::from_size_align_unchecked(4096, 4096) }).unwrap();
-            std::println!("{:p}", ptr.as_ptr().cast::<u8>());
             v.push(ptr);
-        }
-
-        if !has_unique_elements(&v) {
-            v.sort();
-            for i in v {
-                //std::println!("{:p}", i.as_ptr().cast::<u8>())
-            }
-            panic!("Contains duplicate elements");
         }
 
         for _i in 0..1_0000 {
@@ -328,6 +323,7 @@ mod tests {
             }
 
             if !has_unique_elements(&v) {
+                std::println!("----Borked----");
                 v.sort();
                 for i in v {
                     std::println!("{:p}", i.as_ptr().cast::<u8>())
@@ -337,12 +333,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn big_test() {
+        let bs = 0x100_0000usize;
+        let alloc: ImplAlloc<14, NoOverflow> = ImplAlloc {
+            inner: std::cell::RefCell::new(TestBAlloc::new(Global))
+        };
+
+        unsafe { alloc.deallocate(NonNull::new(bs as *mut u8).unwrap(), Layout::from_size_align_unchecked(bs, bs)) };
+        let out = alloc.allocate(unsafe { Layout::from_size_align_unchecked(4096, 4096) }).unwrap();
+
+        for i in &alloc.inner.borrow().orders {
+            for j in i.binary_search_tree.reverse_order() {
+                std::print!("{:?}", j);
+            }
+            std::println!();
+        }
+
+        unsafe { alloc.deallocate(out.cast(), Layout::from_size_align_unchecked(4096, 4096)) };
+
+
+        for i in &alloc.inner.borrow().orders {
+            for j in i.binary_search_tree.reverse_order() {
+                std::print!("{:?}", j);
+            }
+            std::println!();
+        }
+    }
+
     fn has_unique_elements<T>(iter: T) -> bool
     where
         T: IntoIterator,
-        T::Item: Eq + std::hash::Hash,
+        T::Item: Eq + std::hash::Hash + Copy + core::fmt::Debug,
     {
         let mut uniq = std::collections::HashSet::new();
-        iter.into_iter().all(move |x| uniq.insert(x))
+        iter.into_iter().all(move |x| {
+            let rc = uniq.insert(x);
+            if !rc {
+                std::println!("Duplicate element found {:?}", x);
+            }
+            rc
+        })
     }
 }
