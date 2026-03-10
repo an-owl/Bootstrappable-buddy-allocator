@@ -2,9 +2,8 @@
 #![no_std]
 extern crate alloc;
 
-use core::alloc::{AllocError, Allocator, Layout};
+use core::alloc::{AllocError, Allocator};
 use core::mem::MaybeUninit;
-use core::ptr::NonNull;
 use binary_search_tree::BinarySearchTree;
 
 pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O, T, M, A>
@@ -25,7 +24,7 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O, T, M, A> BuddyAlloca
         A: Allocator + Clone + Copy + 'static,
         T: From<u8> + Copy
 {
-    const fn new(alloc: A) -> Self {
+    pub const fn new(alloc: A) -> Self {
 
         let mut orders: [MaybeUninit<Order<T, M, A>>; ORDERS] = [ const { MaybeUninit::uninit() }; ORDERS];
         let mut count = 0;
@@ -64,7 +63,7 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O, T, M, A> BuddyAlloca
 
         match self.orders[order].pop() {
             Some(addr) => Ok(Self::decode_addr(addr, order)),
-            None if order+1 == ORDERS => {return Err(AllocError)},
+            None if order+1 == ORDERS => Err(AllocError),
             None => {
                 let addr = self.allocate_inner(order+1)?;
                 let remain = buddy_of(Self::encode_addr(addr, order));
@@ -130,7 +129,7 @@ where
 impl<T,M,A> Order<T,M,A>
     where
         M: memory_addresses::MemoryAddress<RAW=T> + 'static,
-        A: core::alloc::Allocator + Clone + Copy + 'static,
+        A: Allocator + Clone + Copy + 'static,
         T: From<u8>
 {
     const fn new(alloc: A) -> Order<T,M,A> {
@@ -197,6 +196,8 @@ mod tests {
     use alloc::vec::Vec;
     use rand::prelude::SliceRandom;
     use super::*;
+    use core::alloc::Layout;
+    use core::ptr::NonNull;
     extern crate std;
     extern crate alloc;
 
