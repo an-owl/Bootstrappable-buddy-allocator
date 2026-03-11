@@ -18,7 +18,7 @@ pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O, T, M, 
     _p: core::marker::PhantomData<O>
 }
 
-impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, O, T, M, A>
+impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O: OverflowMode, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, O, T, M, A>
     where
         M: memory_addresses::MemoryAddress<RAW=T> + 'static,
         A: Allocator + Clone + Copy + 'static,
@@ -54,9 +54,18 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O, T, M, A> BuddyAlloca
     }
 
     pub fn allocate(&mut self, size: usize) -> Result<M,AllocError> {
-        let offset = (size >> PAGE_SIZE_OFFSET).next_power_of_two();
+        let offset = Self::calculate_offset(size);
         let order = offset.trailing_zeros() as usize;
         self.allocate_inner(order)
+    }
+
+    fn calculate_offset(size: usize) -> usize {
+        if size & (PAGE_SIZE_OFFSET - 1) == 0 {
+            (size >> PAGE_SIZE_OFFSET).next_power_of_two()
+        } else {
+            // Increment size by one page if `size` is not page aligned.
+            ((size + (1 << PAGE_SIZE_OFFSET)) >> PAGE_SIZE_OFFSET).next_power_of_two() // Bump the address up by one page
+        }
     }
 
     fn allocate_inner(&mut self, order: usize) -> Result<M,AllocError> {
@@ -86,7 +95,7 @@ macro_rules! impl_dealloc {
         T: From<u8> + Copy
         {
             pub fn deallocate(&mut self, size: usize, addr: M) -> Result<(),M> {
-                let offset = (size >> PAGE_SIZE_OFFSET).next_power_of_two();
+                let offset = Self::calculate_offset(size);
                 let order = offset.trailing_zeros() as usize;
                 self.deallocate_inner(order, addr)
             }
@@ -187,8 +196,12 @@ enum OperationResult<M: memory_addresses::MemoryAddress> {
     Merged(Encoded<M>),
 }
 
+trait OverflowMode {}
+
 enum Overflow {}
+impl OverflowMode for Overflow {}
 enum NoOverflow {}
+impl OverflowMode for NoOverflow {}
 
 #[cfg(test)]
 mod tests {
@@ -204,7 +217,7 @@ mod tests {
     type TestBAlloc<const ORDERS: usize, O> = BuddyAllocator::<ORDERS,12, O,u64,memory_addresses::arch::x86_64::VirtAddr,Global>;
 
 
-    struct ImplAlloc<const ORDERS: usize, O> {
+    struct ImplAlloc<const ORDERS: usize, O: OverflowMode> {
         inner: std::cell::RefCell<TestBAlloc<ORDERS,O>>
     }
 
