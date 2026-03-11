@@ -6,7 +6,29 @@ use core::alloc::{AllocError, Allocator};
 use core::mem::MaybeUninit;
 use binary_search_tree::BinarySearchTree;
 
-pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O, T, M, A>
+/// This is the backend buddy allocator.
+///
+/// [Mode of operation](https://en.wikipedia.org/wiki/Buddy_memory_allocation).
+/// This implementation internally uses a series of binary trees to track the free lists.
+///
+/// * `ORDERS` indicates the number of free lists. This with `PAGE_SIZE` indicates the maximum size
+/// allocation this can handle. A smaller `ORDERS` reduces the maximum time complexity of operations
+/// but increases the memory complexity.
+/// * `PAGE_SIZE` indicates the smallest unit this will return. This is a bit offset not a raw value.
+/// An actual page size of 4K requires this to be set to `12` (`1 << 12 == 4K`).
+/// * `O: OverflowMode`. This indicates how the `BuddyAllocator` will handle max order overflows.
+/// When `O` is [Overflow], then [Self::deallocate] will perform a buddy check on the highest order
+/// and if the budy is found it will return with an error contain the bock address.
+/// This allows a higher level allocator to manage these sections of memory.
+/// When `O` is [NoOverflow] then the highest order will never be buddy checked, and
+/// [Self::deallocate] will never return with an error.
+/// * `T` & `M` Is a representation of the memory types that will be used. This allows the BuddyAllocator to be used for more than [Allocator],
+/// it can be used as a physical memory allocator.
+/// * `A` Is the backing allocator. This will only be used to allocate/free one node at a time.
+/// A simple implementation like [linked_list_allocator](https://crates.io/crates/linked_list_allocator) can be used.
+///
+/// The maximum size this allocator allocate/free is `1 << (PAGE_SIZE_OFFSET + ORDERS)`.
+pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O: OverflowMode, T, M, A>
     where
         M: memory_addresses::MemoryAddress<RAW=T> + 'static,
         A: Allocator + Clone + 'static,
@@ -26,6 +48,9 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O: OverflowMode, T, M, 
 {
     pub const fn new(alloc: A) -> Self {
 
+        // Order is not `Copy` and the length of `orders` is not known at writing-time, and `new` needs to be const.
+        // This constructs an array of ORDERS size with uninit elements and initializes them at compile time.
+        // This is an annoying trick to initialize the whole array at compile time.
         let mut orders: [MaybeUninit<Order<T, M, A>>; ORDERS] = [ const { MaybeUninit::uninit() }; ORDERS];
         let mut count = 0;
         while count < ORDERS {
@@ -34,6 +59,7 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O: OverflowMode, T, M, 
         }
 
         Self {
+            // SAFETY: This is safe because `orders` contains fully initialized `Order`'s
             orders: unsafe { core::mem::transmute_copy(&orders) },
             _p: core::marker::PhantomData
         }
@@ -53,6 +79,16 @@ impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O: OverflowMode, T, M, 
         addr << (PAGE_SIZE_OFFSET + order)
     }
 
+    /// Allocates `size`, returning `Ok(_)` if self contains enough memory.
+    ///
+    /// A size of `0` will be treated as a size of `1<<PAGE_SIZE_OFFSET`, the caller should sanitize size `0`.
+    /// Internally the size is calculated using `(size >> PAGE_SIZE_OFFSET).next_power_of_two()`,
+    /// which determines the starting order. If the size is not aligned to `1 << PAGE_SIZE_OFFSET`
+    /// it will be incremented by that amount to ensure the starting order is large enough.
+    ///
+    /// ## Panics
+    ///
+    /// If size is larger than the maximum allocation size this fn will panic.
     pub fn allocate(&mut self, size: usize) -> Result<M,AllocError> {
         let offset = Self::calculate_offset(size);
         let order = offset.trailing_zeros() as usize;
@@ -94,6 +130,17 @@ macro_rules! impl_dealloc {
         A: Allocator + Clone + Copy + 'static,
         T: From<u8> + Copy
         {
+            /// Frees the requested address with the given size.
+            /// The caller must use the same `size` sanitizations as the ones used for [Self::allocate].
+            ///
+            /// This function may allocate memory from `A`.
+            ///
+            /// If `O` is [Overflow] this may return `Err(address)`, the address is a block of `1 << (PAGE_SIZE_OFFSET + ORDERS) * 2`
+            /// If `O` is [NoOverflow] this fn will never return `Err(_)`.
+            ///
+            /// ## Panics
+            ///
+            /// If size is larger than the maximum allocation size this fn will panic.
             pub fn deallocate(&mut self, size: usize, addr: M) -> Result<(),M> {
                 let offset = Self::calculate_offset(size);
                 let order = offset.trailing_zeros() as usize;
