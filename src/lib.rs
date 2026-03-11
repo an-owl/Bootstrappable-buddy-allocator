@@ -28,6 +28,7 @@ use binary_search_tree::BinarySearchTree;
 /// A simple implementation like [linked_list_allocator](https://crates.io/crates/linked_list_allocator) can be used.
 ///
 /// The maximum size this allocator allocate/free is `1 << (PAGE_SIZE_OFFSET + ORDERS)`.
+#[allow(private_bounds)]
 pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O: OverflowMode, T, M, A>
     where
         M: memory_addresses::MemoryAddress<RAW=T> + 'static,
@@ -40,6 +41,7 @@ pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O: Overfl
     _p: core::marker::PhantomData<O>
 }
 
+#[allow(private_bounds)]
 impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O: OverflowMode, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, O, T, M, A>
     where
         M: memory_addresses::MemoryAddress<RAW=T> + 'static,
@@ -245,9 +247,9 @@ enum OperationResult<M: memory_addresses::MemoryAddress> {
 
 trait OverflowMode {}
 
-enum Overflow {}
+pub enum Overflow {}
 impl OverflowMode for Overflow {}
-enum NoOverflow {}
+pub enum NoOverflow {}
 impl OverflowMode for NoOverflow {}
 
 #[cfg(test)]
