@@ -45,10 +45,14 @@ pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O: Overfl
 #[allow(private_bounds)]
 impl<const ORDERS: usize, const PAGE_SIZE_OFFSET: usize, O: OverflowMode, T, M, A> BuddyAllocator<ORDERS, PAGE_SIZE_OFFSET, O, T, M, A>
     where
-        M: memory_addresses::MemoryAddress<RAW=T> + 'static,
+        M: MemoryAddress<RAW=T> + 'static,
         A: Allocator + Clone + Copy + 'static,
         T: From<u8> + Copy
 {
+
+    pub const PAGE_SIZE: usize = 1 << PAGE_SIZE_OFFSET;
+    pub const ORDER_MAX_SIZE: usize = 1 << PAGE_SIZE_OFFSET + ORDERS - 1;
+
     pub const fn new(alloc: A) -> Self {
 
         // Order is not `Copy` and the length of `orders` is not known at writing-time, and `new` needs to be const.
@@ -261,6 +265,8 @@ mod tests {
     use super::*;
     use core::alloc::Layout;
     use core::ptr::NonNull;
+    use memory_addresses::VirtAddr;
+
     extern crate std;
     extern crate alloc;
 
@@ -423,6 +429,16 @@ mod tests {
             }
             std::println!();
         }
+    }
+
+    #[test]
+    fn helpers_size() {
+        const ORDERS: usize = 6;
+        let mut t_alloc = TestBAlloc::<ORDERS,Overflow>::new(Global);
+        t_alloc.deallocate(TestBAlloc::<6,Overflow>::PAGE_SIZE, VirtAddr::new(TestBAlloc::<6,Overflow>::PAGE_SIZE as u64)).unwrap();
+        assert_eq!(t_alloc.orders[0].binary_search_tree.size, 1);
+        t_alloc.deallocate(TestBAlloc::<6,Overflow>::ORDER_MAX_SIZE, VirtAddr::new(TestBAlloc::<6,Overflow>::ORDER_MAX_SIZE as u64)).unwrap();
+        assert_eq!(t_alloc.orders[ORDERS-1].binary_search_tree.size, 1);
     }
 
     fn has_unique_elements<T>(iter: T) -> bool
