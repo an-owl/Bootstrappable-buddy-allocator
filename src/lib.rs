@@ -5,6 +5,7 @@ extern crate alloc;
 use core::alloc::{AllocError, Allocator};
 use core::mem::MaybeUninit;
 use binary_search_tree::BinarySearchTree;
+pub use memory_addresses::MemoryAddress;
 
 /// This is the backend buddy allocator.
 ///
@@ -31,7 +32,7 @@ use binary_search_tree::BinarySearchTree;
 #[allow(private_bounds)]
 pub struct BuddyAllocator<const ORDERS: usize, const PAGE_SIZE: usize, O: OverflowMode, T, M, A>
     where
-        M: memory_addresses::MemoryAddress<RAW=T> + 'static,
+        M: MemoryAddress<RAW=T> + 'static,
         A: Allocator + Clone + 'static,
         T: From<u8> + Copy
 
